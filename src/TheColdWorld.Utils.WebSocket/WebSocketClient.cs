@@ -16,7 +16,17 @@ public class WebSocketClient : IDisposable
         ClientWebSocket ws = new ();
         _cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         asyncService = new(threadNamePrefix, threadCount: 5);
-        _= ws.ConnectAsync(uri, _cts.Token); 
+        Task task= ws.ConnectAsync(uri, _cts.Token);
+        try
+        {
+            Task.WaitAll(task);
+        }
+        catch (AggregateException ex)
+        {
+            if (ex.InnerException is not null) throw ex.InnerException;
+            throw;
+        }
+        catch { throw; }
         _connection = new(ws,asyncService,packetAccept,_cts.Token,PacketBindSide.ServerBind);
     }
     WebSocketConnection _connection;

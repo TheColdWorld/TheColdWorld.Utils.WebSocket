@@ -1,4 +1,5 @@
 ﻿using System.Net;
+using System.Net.WebSockets;
 using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json.Nodes;
@@ -80,7 +81,19 @@ namespace ConsoleDebug
 
             Console.WriteLine("\n--- Additional: client2.Send(new TestPacket()) ---");
             client2.Send(new TestPacket());
-
+            Console.WriteLine("\n--- Additional: connection failed ---");
+            try
+            {
+               using WebSocketClient client = new(new("ws://localhost:25554"), (a, b, c) => { });
+            }
+            catch(WebSocketException wse)
+            {
+                Console.WriteLine($"success:{wse}");
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine($"failed:{e}");
+            }
             Console.WriteLine("\nPress any key to exit...");
             Console.ReadKey(true);
 
