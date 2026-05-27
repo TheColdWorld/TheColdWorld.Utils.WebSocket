@@ -38,9 +38,15 @@ public class WebSocketServerController
                             async Task sendAsync(IPacket packet, Boolean flag, CancellationToken ct)
                             {
                                 if (packet.PacketBindSide != PacketBindSide.ClientBind)
-                                    throw new ArgumentException("...");
-                                var bytes = Encoding.UTF8.GetBytes(packet.Write().ToJsonString());
-                                await client.SendAsync(bytes, WebSocketMessageType.Binary, true, ct);
+                                    throw new ArgumentException("invaild packet side",nameof(packet));
+
+                                JsonObject packetObj = new()
+                                {
+                                    ["id"] = packet.Identifier.ToString(),
+                                    ["data"] = packet.Write()
+                                };
+                                byte[] data = Encoding.UTF8.GetBytes(packetObj.ToJsonString());
+                                await client.SendAsync(data, WebSocketMessageType.Binary, true, ct);
                             }
                             await OnPacketAccept(data, id, sendAsync, token);
                         }
