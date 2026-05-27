@@ -38,7 +38,7 @@ public class WebSocketServerController
                             async Task sendAsync(IPacket packet, Boolean flag, CancellationToken ct)
                             {
                                 if (packet.PacketBindSide != PacketBindSide.ClientBind)
-                                    throw new ArgumentException("invaild packet side",nameof(packet));
+                                    throw new ArgumentException("invaild packet side", nameof(packet));
 
                                 JsonObject packetObj = new()
                                 {
@@ -51,6 +51,7 @@ public class WebSocketServerController
                             await OnPacketAccept(data, id, sendAsync, token);
                         }
                     }
+                    catch (OperationCanceledException) { break; }
                     catch (Exception ex)
                     {
                         LogError(ex);
@@ -58,6 +59,7 @@ public class WebSocketServerController
                 }
             }
         }
+        catch (OperationCanceledException) { return; }
         catch (WebSocketException ex) when (ex.WebSocketErrorCode == WebSocketError.ConnectionClosedPrematurely)
         {
         }
@@ -70,7 +72,7 @@ public class WebSocketServerController
             _clients.TryRemove(client, out _);
             if (client.State is not WebSocketState.Closed and not WebSocketState.Aborted)
             {
-                await client.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing", CancellationToken.None);
+                await client.CloseAsync(WebSocketCloseStatus.NormalClosure, "Server Stopped", CancellationToken.None);
             }
             client.Dispose();
         }
