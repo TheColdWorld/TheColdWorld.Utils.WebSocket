@@ -24,7 +24,7 @@ public class WebSocketServerController
         {
             while (client.State == WebSocketState.Open && !token.IsCancellationRequested)
             {
-                var result = await WebSocketConnection.ReceiveAsync(client, token);
+                var result = await WebSocketHelpers.ReceiveAsync(client, token);
                 if (result == null) break;
 
                 if (result.ContainsKey("data") && result.ContainsKey("id") &&
@@ -35,7 +35,7 @@ public class WebSocketServerController
                     {
                         if (OnPacketAccept != null)
                         {
-                            async Task sendAsync(IPacket packet, Boolean flag, CancellationToken ct)
+                            async Task sendAsync(IPacket packet, CancellationToken ct)
                             {
                                 if (packet.PacketBindSide != PacketBindSide.ClientBind)
                                     throw new ArgumentException("invaild packet side", nameof(packet));
@@ -110,4 +110,4 @@ public class WebSocketServerController
     }
 }
 
-public delegate Task SendToRemoteAsync(IPacket packet, bool flag, CancellationToken token);
+public delegate Task SendToRemoteAsync(IPacket packet, CancellationToken token);

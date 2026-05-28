@@ -1,6 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Net.Sockets;
+﻿
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json.Nodes;
@@ -11,7 +9,7 @@ namespace TheColdWorld.Utils.WebSocket;
 
 public class WebSocketClient : IDisposable
 {
-    public WebSocketClient(Uri uri, Action<JsonObject, Identifier, SendToRemote> packetAccept, string threadNamePrefix = "TheColdWorld-TcpClient-ThreadPool", CancellationToken cancellationToken = default)
+    public WebSocketClient(Uri uri, Action<JsonObject, Identifier, SendToRemoteAsync> packetAccept, string threadNamePrefix = "TheColdWorld-TcpClient-ThreadPool", CancellationToken cancellationToken = default)
     {
         ClientWebSocket ws = new ();
         _cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -33,21 +31,21 @@ public class WebSocketClient : IDisposable
     internal readonly AsyncService asyncService;
     readonly CancellationTokenSource _cts;
     internal volatile bool _disposed = false;
-    public void Send<TPacket>(TPacket packet, SocketFlags flags = SocketFlags.None) where TPacket : class, IPacket
+    public void Send<TPacket>(TPacket packet) where TPacket : class, IPacket
     {
         if (packet.PacketBindSide != PacketBindSide.ServerBind) throw new ArgumentException("Trying use client to send client bound packet", nameof(packet));
-        _connection.Send(packet, flags);
+        _connection.Send(packet);
     }
-    public Task SendAsync<TPacket>(TPacket packet, SocketFlags flags = SocketFlags.None) where TPacket : class, IPacket =>
+    public Task SendAsync<TPacket>(TPacket packet) where TPacket : class, IPacket =>
         packet.PacketBindSide != PacketBindSide.ServerBind
             ? throw new ArgumentException("Trying use client to send client bound packet", nameof(packet))
             : _connection.SendAsync(packet);
-    public void Send(IPacket packet, SocketFlags flags = SocketFlags.None)
+    public void Send(IPacket packet)
     {
         if (packet.PacketBindSide != PacketBindSide.ServerBind) throw new ArgumentException("Trying use client to send client bound packet", nameof(packet));
-        _connection.Send(packet, flags);
+        _connection.Send(packet);
     }
-    public Task SendAsync(IPacket packet, SocketFlags flags = SocketFlags.None) =>
+    public Task SendAsync(IPacket packet) =>
         packet.PacketBindSide != PacketBindSide.ServerBind
             ? throw new ArgumentException("Trying use client to send client bound packet", nameof(packet))
             : _connection.SendAsync(packet);

@@ -3,8 +3,6 @@ using System.Buffers;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO.MemoryMappedFiles;
-using System.Net;
-using System.Net.Sockets;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
@@ -18,7 +16,7 @@ namespace TheColdWorld.Utils.WebSocket;
 internal sealed class WebSocketConnection :IDisposable
 {
     internal const int BUFFER_LENGTH = 1024 ;//1KB
-    public WebSocketConnection(System.Net.WebSockets.WebSocket connection, AsyncService asyncService, Action<JsonObject, Identifier, SendToRemote> packetAccept, CancellationToken token, PacketBindSide remoteSide)
+    public WebSocketConnection(System.Net.WebSockets.WebSocket connection, AsyncService asyncService, Action<JsonObject, Identifier, SendToRemoteAsync> packetAccept, CancellationToken token, PacketBindSide remoteSide)
     {
         _connection = connection;
         this._cts = CancellationTokenSource.CreateLinkedTokenSource(token);
@@ -36,7 +34,7 @@ internal sealed class WebSocketConnection :IDisposable
         {
             try
             {
-                JsonObject result = await ReceiveAsync(_connection, _cts.Token);
+                JsonObject result = await WebSocketHelpers.ReceiveAsync(_connection, _cts.Token);
                 if (result.ContainsKey("data") && result.ContainsKey("id") && result["data"] is JsonObject data && result["id"] is JsonValue jv)
                 {
                     Identifier id = new(jv.ToString());
@@ -44,10 +42,10 @@ internal sealed class WebSocketConnection :IDisposable
                     {
                         try
                         {
-                            this.packetAccept.Invoke(data, id, (packet, flag, token) =>
+                            this.packetAccept.Invoke(data, id,async (packet,  token) =>
                             {
                                 if (packet.PacketBindSide != remoteSide) throw new ArgumentException("Trying use server to send server bound packet", nameof(packet));
-                                Send(packet, flag, token);
+                                await SendAsync(packet,  token);
                             });
                         }
                         catch (Exception)
@@ -84,7 +82,7 @@ internal sealed class WebSocketConnection :IDisposable
             }
         }
     }
-    internal void Send(IPacket packet, SocketFlags flags = SocketFlags.None, CancellationToken cancellationToken = default) 
+    internal void Send(IPacket packet,CancellationToken cancellationToken = default) 
     {
         SendQueue.Writer.TryWrite(new(async () =>
         {
@@ -97,7 +95,7 @@ internal sealed class WebSocketConnection :IDisposable
             await _connection.SendAsync(Encoding.UTF8.GetBytes(packetObj.ToJsonString()), WebSocketMessageType.Binary, true, cts.Token);
         }));
     }
-    internal void Send<TPacket>(TPacket packet, SocketFlags flags = SocketFlags.None, CancellationToken cancellationToken = default) where TPacket : class, IPacket
+    internal void Send<TPacket>(TPacket packet, CancellationToken cancellationToken = default) where TPacket : class, IPacket
     {
         SendQueue.Writer.TryWrite(new(async () =>
         {
@@ -175,36 +173,6 @@ internal sealed class WebSocketConnection :IDisposable
     private volatile bool _disposed;
     private volatile bool stable = true;
     private readonly Lock _lock = new();
-    private readonly Action<JsonObject, Identifier, SendToRemote> packetAccept;
+    private readonly Action<JsonObject, Identifier, SendToRemoteAsync> packetAccept;
     ~WebSocketConnection() => this.Dispose();
-    internal static async Task<JsonObject> ReceiveAsync(System.Net.WebSockets.WebSocket ws, CancellationToken cancellation = default)
-    {
-        if(ws.CloseStatus  is not null) throw new InvalidOperationException();
-        ArrayPool<byte> pool = ArrayPool<byte>.Shared;
-        using MemoryStream ms = new MemoryStream();
-        byte[] buffer = ArrayPool<byte>.Shared.Rent(BUFFER_LENGTH);
-        try
-        {
-            WebSocketReceiveResult result;
-            do
-            {
-                result = await ws.ReceiveAsync(buffer, cancellation);
-                if (result.MessageType != WebSocketMessageType.Binary)
-                    return new JsonObject();
-                if (result.CloseStatus != null)
-                    return [];
-
-                ms.Write(buffer, 0, result.Count);
-            }
-            while (!result.EndOfMessage && !cancellation.IsCancellationRequested);
-
-            ms.Position = 0;
-            var jsonNode = await JsonNode.ParseAsync(ms, cancellationToken: cancellation);
-            return jsonNode as JsonObject ?? [];
-        }
-        finally
-        {
-            ArrayPool<byte>.Shared.Return(buffer);
-        }
-    }
 }
