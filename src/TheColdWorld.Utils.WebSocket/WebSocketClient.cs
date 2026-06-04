@@ -1,65 +1,102 @@
-﻿
+﻿using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Net;
 using System.Net.WebSockets;
+using System.Runtime.Versioning;
 using System.Text;
 using System.Text.Json.Nodes;
 using TheColdWorld.Utils.socket;
-using TheColdWorld.Utils.Thread;
 
 namespace TheColdWorld.Utils.WebSocket;
 
-public class WebSocketClient : IDisposable
+public sealed class WebSocketClient:IAsyncDisposable
 {
-    public WebSocketClient(Uri uri, Action<JsonObject, Identifier, SendToRemoteAsync> packetAccept, string threadNamePrefix = "TheColdWorld-TcpClient-ThreadPool", CancellationToken cancellationToken = default)
+    public WebSocketClient(Uri uri,  CancellationToken cancellationToken = default)
     {
-        ClientWebSocket ws = new ();
-        _cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        asyncService = new(threadNamePrefix, threadCount: 5);
-        Task task= ws.ConnectAsync(uri, _cts.Token);
+        if (!uri.IsAbsoluteUri)throw new ArgumentException("Uri must be absolute", nameof(uri));
+        if (uri.Scheme != Uri.UriSchemeWs && uri.Scheme != Uri.UriSchemeWss) throw new ArgumentException("Uri must begin with \'ws://\' or \'wss://\'",nameof(uri));
+        _connection = new();
+        _remoteUri= uri;
+        _cancellationTokenSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+    }
+    public Task ConnectAsync()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (_connection.CloseStatus is not null) throw new InvalidOperationException($"Websocket connection is closed because {_connection.CloseStatusDescription}({_connection.CloseStatus.Value})");
+        if (_connectTask != null) return _connectTask; 
+        _connectTask= _connection.ConnectAsync(_remoteUri, _cancellationTokenSource.Token);
+        return _connectTask;
+    }
+    public async ValueTask<(Identifier,JsonObject)> ReceiveAsync(CancellationToken token=default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        CancellationTokenSource source = CancellationTokenSource.CreateLinkedTokenSource(token, _cancellationTokenSource.Token);
+        await _silm.WaitAsync(source.Token);
+        ObjectDisposedException.ThrowIf(_disposed, this);
         try
         {
-            Task.WaitAll(task);
+            if (_connection.CloseStatus is not null) throw new InvalidOperationException($"Websocket connection is closed because {_connection.CloseStatusDescription}({_connection.CloseStatus.Value})");
+            if (_connection.State == WebSocketState.None) await ConnectAsync();
+            while (_connection.State != WebSocketState.Open)
+            {
+                await Task.Yield();
+                if (_connection.CloseStatus is not null) throw new InvalidOperationException($"Websocket connection is closed because {_connection.CloseStatusDescription}({_connection.CloseStatus.Value})");
+            }
+            var packet = await WebsocketHelper.ReceiveAsync(_connection, source.Token);
+            if (WebsocketHelper.TryParsePacket(packet, out var id, out var data))
+            {
+                return (id, data);
+            }
+            else throw new InvalidDataException("Cannot decode packet:received binary's format is wrong");
         }
-        catch (AggregateException ex)
+        finally { _silm.Release(); }
+    }
+    public async Task SendAsync(IPacket packet,CancellationToken token=default)
+    {
+        if (packet.PacketBindSide != PacketBindSide.ServerBind) throw new ArgumentException($"packet must be {PacketBindSide.ServerBind},but given {PacketBindSide.ClientBind}",nameof(packet));
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        CancellationTokenSource source = CancellationTokenSource.CreateLinkedTokenSource(token, _cancellationTokenSource.Token);
+        await _silm.WaitAsync(source.Token);
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        try
         {
-            if (ex.InnerException is not null) throw ex.InnerException;
-            throw;
+            if (_connection.CloseStatus is not null) throw new InvalidOperationException($"Websocket connection is closed because {_connection.CloseStatusDescription}({_connection.CloseStatus.Value})");
+            if (_connection.State == WebSocketState.None) await ConnectAsync();
+            while (_connection.State != WebSocketState.Open)
+            {
+                await Task.Yield();
+                if (_connection.CloseStatus is not null) throw new InvalidOperationException($"Websocket connection is closed because {_connection.CloseStatusDescription}({_connection.CloseStatus.Value})");
+            }
+            var data = WebsocketHelper.BuildPacket(packet);
+            await _connection.SendAsync(data,WebSocketMessageType.Binary,true,source.Token);
         }
-        catch { throw; }
-        _connection = new(ws,asyncService,packetAccept,_cts.Token,PacketBindSide.ServerBind);
+        finally { _silm.Release(); }
     }
-    WebSocketConnection _connection;
-    internal readonly AsyncService asyncService;
-    readonly CancellationTokenSource _cts;
-    internal volatile bool _disposed = false;
-    public void Send<TPacket>(TPacket packet) where TPacket : class, IPacket
-    {
-        if (packet.PacketBindSide != PacketBindSide.ServerBind) throw new ArgumentException("Trying use client to send client bound packet", nameof(packet));
-        _connection.Send(packet);
-    }
-    public Task SendAsync<TPacket>(TPacket packet) where TPacket : class, IPacket =>
-        packet.PacketBindSide != PacketBindSide.ServerBind
-            ? throw new ArgumentException("Trying use client to send client bound packet", nameof(packet))
-            : _connection.SendAsync(packet);
-    public void Send(IPacket packet)
-    {
-        if (packet.PacketBindSide != PacketBindSide.ServerBind) throw new ArgumentException("Trying use client to send client bound packet", nameof(packet));
-        _connection.Send(packet);
-    }
-    public Task SendAsync(IPacket packet) =>
-        packet.PacketBindSide != PacketBindSide.ServerBind
-            ? throw new ArgumentException("Trying use client to send client bound packet", nameof(packet))
-            : _connection.SendAsync(packet);
-    public void Dispose()
+    public async ValueTask DisposeAsync()
     {
         if (_disposed) return;
-        lock (this)
+        await _silm.WaitAsync();
+        try
         {
-            if (_disposed) return;
+            if(_disposed) return;
             _disposed = true;
+            try
+            {
+                await _connection.CloseAsync(WebSocketCloseStatus.NormalClosure, "Client Disposing", _cancellationTokenSource.Token);
+            }
+            catch (ObjectDisposedException) { }
+            await _cancellationTokenSource.CancelAsync();
+            _connection.Dispose();
+            _cancellationTokenSource.Dispose();
+            GC.SuppressFinalize(this);
         }
-        _cts.Cancel();
-        _connection?.Dispose();
-        _cts.Dispose();
-        GC.SuppressFinalize(this);
+        finally { _silm.Release();_silm.Dispose(); }
     }
+    Task? _connectTask=null;
+    readonly ClientWebSocket _connection;
+    readonly Uri _remoteUri;
+    readonly CancellationTokenSource _cancellationTokenSource;
+    readonly SemaphoreSlim _silm = new(1, 1);
+    bool _disposed = false;
 }

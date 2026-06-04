@@ -6,27 +6,28 @@
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>True</AllowUnsafeBlocks>
     <Title>$(AssemblyName)</Title>
-    <Version>1.0.7-rc4</Version>
+    <Version>1.0.8-rc1</Version>
     <Authors>TheColdWorld</Authors>
     <Company>Null</Company>
     <Product>Null</Product>
     <Description>WebSocket support for TheColdWorld.Utils</Description>
     <PackageLicenseExpression>LGPL-2.1-only</PackageLicenseExpression>
     <PackageRequireLicenseAcceptance>True</PackageRequireLicenseAcceptance>
-    <IncludeSymbols>False</IncludeSymbols>
+    <IncludeSymbols>True</IncludeSymbols>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <RepositoryUrl>https://github.com/TheColdWorld/TheColdWorld.Utils.WebSocket.git</RepositoryUrl>
     <PackageProjectUrl>https://github.com/TheColdWorld/TheColdWorld.Utils.WebSocket</PackageProjectUrl>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
     <IsAotCompatible>True</IsAotCompatible>
-    <DebugType>embedded</DebugType>
+    <DebugType>portable</DebugType>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|AnyCPU'">
     <IsAotCompatible>True</IsAotCompatible>
-    <DebugType>embedded</DebugType>
+    <DebugType>portable</DebugType>
   </PropertyGroup>
 
   <ItemGroup>

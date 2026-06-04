@@ -7,7 +7,7 @@
 publish
 
 *.user
-/src/ConsoleDebug/bin
-/src/ConsoleDebug/obj
+/src/Test/bin
+/src/Test/obj
 /src/TheColdWorld.Utils.WebSocket/bin
 /src/TheColdWorld.Utils.WebSocket/obj

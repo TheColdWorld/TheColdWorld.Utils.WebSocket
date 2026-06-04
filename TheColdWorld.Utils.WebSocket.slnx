@@ -4,6 +4,6 @@
     <File Path="LICENSE" />
     <File Path="README.md" />
   </Folder>
-  <Project Path="src/ConsoleDebug/ConsoleDebug.csproj" Id="295f3c0c-3dea-412b-addf-7e0974fb165a" />
+  <Project Path="src/Test/Test.csproj" Id="db3010aa-26d5-407c-8e45-fe557bcf945a" />
   <Project Path="src/TheColdWorld.Utils.WebSocket/TheColdWorld.Utils.WebSocket.csproj" Id="a2c591f5-9325-4357-a5a6-1ef626125cd2" />
 </Solution>
