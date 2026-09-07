@@ -46,7 +46,13 @@ public sealed class WebSocketServerControlUnit : IAsyncDisposable
         {
             await RemoveClientAsync(client, default);
             if(task is not null) await RemoveTaskAsync(task,default);
-            if (client.CloseStatus == null)  await client.CloseAsync(WebSocketCloseStatus.NormalClosure, _disposed?"Server Closed":null, default); 
+            if (client.CloseStatus == null)
+            {
+                if(client.State != WebSocketState.Aborted)
+                {
+                    await client.CloseAsync(WebSocketCloseStatus.NormalClosure, _disposed ? "Server Closed" : null, default);
+                }
+            }
             client.Dispose(); 
         }
     }
