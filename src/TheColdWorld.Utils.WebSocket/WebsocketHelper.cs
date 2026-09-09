@@ -1,11 +1,8 @@
-﻿using System;
-using System.Buffers;
-using System.Collections.Generic;
-using System.Data.Common;
-using System.Diagnostics.CodeAnalysis;
+﻿using System.Buffers;
+using System.Net.Sockets;
 using System.Net.WebSockets;
-using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using TheColdWorld.Utils.socket;
 
@@ -13,7 +10,7 @@ namespace TheColdWorld.Utils.WebSocket;
 
 public static class WebsocketHelper
 {
-    public static byte[] BuildPacket<TPacket>(TPacket packet) where TPacket:IPacket,allows ref struct
+    public static byte[] BuildPacket<TPacket>(TPacket packet) where TPacket : IPacket, allows ref struct
     {
         JsonObject packetObj = new()
         {
@@ -22,6 +19,7 @@ public static class WebsocketHelper
         };
         return Encoding.UTF8.GetBytes(packetObj.ToJsonString());
     }
+
     public static byte[] BuildPacket(IPacket packet)
     {
         JsonObject packetObj = new()
@@ -31,53 +29,139 @@ public static class WebsocketHelper
         };
         return Encoding.UTF8.GetBytes(packetObj.ToJsonString());
     }
-    public static bool TryParsePacket(JsonObject packet,[NotNullWhen(true)]out Identifier? id,[NotNullWhen(true)]out JsonObject? packetData)
+
+    public static async Task<ReceiveOutcome> ReceiveAsync(
+        System.Net.WebSockets.WebSocket ws,
+        CancellationToken cancellation = default)
     {
-        if (packet.ContainsKey("data") && packet.ContainsKey("id") && packet["data"] is JsonObject data && packet["id"] is JsonValue jv && jv.TryGetValue(out string? pid) && pid is not null)
+        ArgumentNullException.ThrowIfNull(ws);
+        cancellation.ThrowIfCancellationRequested();
+
+        if (ws.CloseStatus is not null)
         {
-            try
+            return new ReceiveOutcome.ClosedOutcome(
+                ws.CloseStatusDescription ?? ws.CloseStatus.Value.ToString(),
+                ws.CloseStatus,
+                ws.CloseStatusDescription);
+        }
+
+        if (ws.State is not WebSocketState.Open)
+        {
+            return ws.State switch
             {
-                id = new(pid);
-                packetData=data;
-                return true;
-            }
-            catch (ArgumentException) { id= null;packetData = null;  return false; }
-            catch{ throw; }
+                WebSocketState.Aborted => new ReceiveOutcome.AbortedOutcome(
+                    new WebSocketException(
+                        WebSocketError.ConnectionClosedPrematurely,
+                        $"WebSocket is in state {ws.State}.")),
+                WebSocketState.CloseReceived or WebSocketState.CloseSent or WebSocketState.Closed
+                    => new ReceiveOutcome.ClosedOutcome($"WebSocket is in state {ws.State}."),
+                _ => new ReceiveOutcome.AbortedOutcome(
+                    new InvalidOperationException(
+                        $"WebSocket is not connected (state: {ws.State})."))
+            };
         }
-        {
-            id = null;
-            packetData = null;
-            return false;
-        }
-    }
-    public static async Task<JsonObject> ReceiveAsync(System.Net.WebSockets.WebSocket ws, CancellationToken cancellation = default)
-    {
-        if (ws.CloseStatus is not null) throw new InvalidOperationException($"Websocket connection is closed because {ws.CloseStatusDescription}({ws.CloseStatus.Value})");
+
         using MemoryStream ms = new();
-        byte[] buffer = ArrayPool<byte>.Shared.Rent(64);
+        byte[] buffer = ArrayPool<byte>.Shared.Rent(1024);
         try
         {
             WebSocketReceiveResult result;
             do
             {
-                result = await ws.ReceiveAsync(buffer, cancellation);
-                if (result.MessageType != WebSocketMessageType.Binary) continue;
-                if (result.CloseStatus != null)
+                try
                 {
-                    throw new InvalidOperationException($"Websocket connection is closed because {result.CloseStatusDescription}({result.CloseStatus.Value})");
+                    result = await ws.ReceiveAsync(buffer, cancellation);
                 }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception e) when (IsTransportClosed(e))
+                {
+                    return new ReceiveOutcome.AbortedOutcome(e);
+                }
+
+                if (result.MessageType == WebSocketMessageType.Close)
+                {
+                    return new ReceiveOutcome.ClosedOutcome(
+                        result.CloseStatusDescription
+                            ?? result.CloseStatus?.ToString()
+                            ?? "WebSocket closed by remote.",
+                        result.CloseStatus,
+                        result.CloseStatusDescription);
+                }
+
+                if (result.MessageType != WebSocketMessageType.Binary)
+                {
+                    while (!result.EndOfMessage)
+                    {
+                        try
+                        {
+                            result = await ws.ReceiveAsync(buffer, cancellation);
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            throw;
+                        }
+                        catch (Exception e) when (IsTransportClosed(e))
+                        {
+                            return new ReceiveOutcome.AbortedOutcome(e);
+                        }
+
+                        if (result.MessageType == WebSocketMessageType.Close)
+                        {
+                            return new ReceiveOutcome.ClosedOutcome(
+                                result.CloseStatusDescription
+                                    ?? result.CloseStatus?.ToString()
+                                    ?? "WebSocket closed by remote.",
+                                result.CloseStatus,
+                                result.CloseStatusDescription);
+                        }
+                    }
+
+                    string message = $"Received a non-binary WebSocket message: {result.MessageType}.";
+                    return new ReceiveOutcome.InvalidOutcome(message, new InvalidDataException(message));
+                }
+
                 await ms.WriteAsync(buffer.AsMemory(0, result.Count), cancellation);
-                await Task.Yield();
             }
-            while (!result.EndOfMessage && !cancellation.IsCancellationRequested);
+            while (!result.EndOfMessage);
+
+            if (ms.Length == 0)
+            {
+                const string message = "Received an empty binary message.";
+                return new ReceiveOutcome.InvalidOutcome(message, new InvalidDataException(message));
+            }
 
             ms.Position = 0;
-            var jsonNode = await JsonNode.ParseAsync(ms, cancellationToken: cancellation);
-            return jsonNode as JsonObject ?? [];
+            JsonNode? node;
+            try
+            {
+                node = await JsonNode.ParseAsync(ms, cancellationToken: cancellation);
+            }
+            catch (JsonException e)
+            {
+                string message = $"Received message is not valid JSON: {e.Message}";
+                return new ReceiveOutcome.InvalidOutcome(message, new InvalidDataException(message, e));
+            }
+
+            if (node is not JsonObject obj)
+            {
+                const string message = "Received JSON is not an object.";
+                return new ReceiveOutcome.InvalidOutcome(message, new InvalidDataException(message));
+            }
+
+            return new ReceiveOutcome.SuccessOutcome(obj);
         }
         finally
         {
             ArrayPool<byte>.Shared.Return(buffer);
         }
     }
+
+    private static bool IsTransportClosed(Exception e)
+        => e is WebSocketException
+            or IOException
+            or SocketException
+            or ObjectDisposedException;
 }

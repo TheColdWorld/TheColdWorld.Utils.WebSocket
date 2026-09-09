@@ -1,16 +1,10 @@
-﻿using Microsoft.AspNetCore;
-using Microsoft.AspNetCore.Builder;
+﻿using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Mvc.Testing;
-using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
-using Microsoft.VisualStudio.TestPlatform.TestHost;
-using Newtonsoft.Json.Linq;
-using System.ComponentModel;
 using System.Text.Json.Nodes;
 using TheColdWorld.Utils.socket;
 using TheColdWorld.Utils.WebSocket;
@@ -38,24 +32,29 @@ class TestPacket : IPacket
     public Identifier Identifier { get; }
     public JsonObject Data { get; }
 
-    public JsonObject Write() => new() { [nameof(PacketBindSide)] = PacketBindSide.ToString(), [nameof(Identifier)] = Identifier.ToString(), [nameof(Data)]=Data.DeepClone() };
+    public JsonObject Write() => new() { [nameof(PacketBindSide)] = PacketBindSide.ToString(), [nameof(Identifier)] = Identifier.ToString(), [nameof(Data)] = Data.DeepClone() };
 }
 public class HelperTest
 {
     [Theory]
     [InlineData("test:c2s", "fuck you NVIDIA,你好")]
     [InlineData("test:s2c", "11451419191080")]
-    public void TestPacketParse(string id,string content)
+    public void TestPacketParse(string id, string content)
     {
-        TestPacket packet = new(PacketBindSide.ServerBind, new(id), new() { [nameof(content)]=content});
+        TestPacket packet = new(PacketBindSide.ServerBind, new(id), new() { [nameof(content)] = content });
         Assert.Equal(id, packet.Identifier);
-        var encoded= WebsocketHelper.BuildPacket(packet);
-        var node= JsonNode.Parse(encoded);
+        var encoded = WebsocketHelper.BuildPacket(packet);
+        var node = JsonNode.Parse(encoded);
         Assert.IsType<JsonObject>(node);
         var obj = node.AsObject();
-        Assert.True(WebsocketHelper.TryParsePacket(obj, out var eid, out var eData));
-        Assert.Equal(id,eid);
-        Assert.Equal(packet.Write().ToJsonString(),eData.ToJsonString());
+        var success = new ReceiveOutcome.SuccessOutcome(obj);
+        Assert.True(success.TryParsePacket(out var eid, out var eData));
+        Assert.Equal(id, eid);
+        Assert.Equal(packet.Write().ToJsonString(), eData.ToJsonString());
+
+        var (pid, pdata) = success.ParsePacket();
+        Assert.Equal(id, pid);
+        Assert.Equal(packet.Write().ToJsonString(), pdata.ToJsonString());
     }
 }
 
@@ -70,6 +69,7 @@ public class OnlineTest : IAsyncLifetime
     {
         await cts.CancelAsync();
         await _host.StopAsync();
+        await controlUnit.DisposeAsync();
         cts.Dispose();
         _host.Dispose();
     }
@@ -85,11 +85,11 @@ public class OnlineTest : IAsyncLifetime
                 app.UseWebSockets();
                 app.Use(async (context, next) =>
                 {
-                    if (context.Request.Path.Value is not null && context.Request.Path.Value=="/ws")
+                    if (context.Request.Path.Value is not null && context.Request.Path.Value == "/ws")
                     {
-                        if(context.WebSockets.IsWebSocketRequest)
+                        if (context.WebSockets.IsWebSocketRequest)
                         {
-                            var client= await context.WebSockets.AcceptWebSocketAsync();
+                            var client = await context.WebSockets.AcceptWebSocketAsync();
                             await controlUnit.HandleClient(client);
                         }
                         else context.Response.StatusCode = StatusCodes.Status400BadRequest;
@@ -111,21 +111,35 @@ public class OnlineTest : IAsyncLifetime
     {
         WebSocketClient client = new(new(_serverUri));
         await client.ConnectAsync();
-        var tcs = new TaskCompletionSource<JsonObject>();
-        async Task HandlePacketAsync(Identifier id, JsonObject dataObj, SendToClientAsync sendToClient, Action stopAction, CancellationToken token)
+        try
         {
-            tcs.SetResult(dataObj);
+            var tcs = new TaskCompletionSource<JsonObject>(TaskCreationOptions.RunContinuationsAsynchronously);
+            Task OnPacket(Identifier id, JsonObject dataObj, SendToClientAsync sendToClient, Action stopAction, CancellationToken token)
+            {
+                tcs.TrySetResult(dataObj);
+                return Task.CompletedTask;
+            }
+            TestPacket rightPacket = new(PacketBindSide.ServerBind, new("test:c2s"), new() { [nameof(message)] = message });
+            TestPacket wrongPacket = new(PacketBindSide.ClientBind, new("failed:failed"), []);
+            controlUnit.OnPacketAccepted += OnPacket;
+            try
+            {
+                await Assert.ThrowsAsync<ArgumentException>(async () => { await client.SendAsync(wrongPacket); });
+                await client.SendAsync(rightPacket);
+                JsonObject dataObj = await tcs.Task.WaitAsync(TimeSpan.FromSeconds(10));
+                Assert.Equal(rightPacket.Write().ToJsonString(), dataObj.ToJsonString());
+                TestPacket p = new(dataObj);
+                Assert.Equal(message, ((string?)p.Data[nameof(message)]?.AsValue()));
+            }
+            finally
+            {
+                controlUnit.OnPacketAccepted -= OnPacket;
+            }
         }
-        TestPacket rightPacket = new(PacketBindSide.ServerBind, new("test:c2s"), new() { [nameof(message)]=message });
-        TestPacket wrongPacket = new(PacketBindSide.ClientBind, new("failed:failed"), []);
-        controlUnit.OnPacketAccepted += HandlePacketAsync;
-        await Assert.ThrowsAsync<ArgumentException>(async () => { await client.SendAsync(wrongPacket); });
-        await client.SendAsync(rightPacket);
-        await Task.Delay(1000);
-        Assert.Equal(rightPacket.Write().ToJsonString(), (await tcs.Task).ToJsonString());
-        TestPacket p = new(await tcs.Task);
-        Assert.Equal(message, ((string?)p.Data[nameof(message)]?.AsValue()));
-        controlUnit.OnPacketAccepted -= HandlePacketAsync;
+        finally
+        {
+            await client.DisposeAsync();
+        }
     }
     [Theory]
     [InlineData("fuck you NVIDIA,你好")]
@@ -134,14 +148,24 @@ public class OnlineTest : IAsyncLifetime
     {
         WebSocketClient client = new(new(_serverUri));
         await client.ConnectAsync();
-        TestPacket rightPacket = new(PacketBindSide.ClientBind, new("test:s2c"), new() { [nameof(message)] = message });
-        TestPacket wrongPacket = new(PacketBindSide.ServerBind, new("failed:failed"), []);
-        await Assert.ThrowsAsync<ArgumentException>(async () => { await controlUnit.BroadCastAsync(wrongPacket); });
-        await controlUnit.BroadCastAsync(rightPacket);
-        var packet= await client.ReceiveAsync();
-        Assert.Equal(rightPacket.Identifier.ToString(),packet.Item1.ToString());
-        Assert.Equal(rightPacket.Write().ToJsonString(), packet.Item2.ToJsonString());
-        TestPacket r = new(packet.Item2);
-        Assert.Equal(message, ((string?)r.Data[nameof(message)]?.AsValue()));
+        try
+        {
+            await Task.Delay(200); // 等待服务端 HandleClient 把 client 加入 _clients
+            TestPacket rightPacket = new(PacketBindSide.ClientBind, new("test:s2c"), new() { [nameof(message)] = message });
+            TestPacket wrongPacket = new(PacketBindSide.ServerBind, new("failed:failed"), []);
+            await Assert.ThrowsAsync<ArgumentException>(async () => { await controlUnit.BroadCastAsync(wrongPacket); });
+            await controlUnit.BroadCastAsync(rightPacket);
+            var outcome = await client.ReceiveAsync();
+            Assert.True(outcome.IsSuccess);
+            Assert.True(outcome.TryParsePacket(out var id, out var data));
+            Assert.Equal(rightPacket.Identifier.ToString(), id!.ToString());
+            Assert.Equal(rightPacket.Write().ToJsonString(), data!.ToJsonString());
+            TestPacket r = new(data!);
+            Assert.Equal(message, ((string?)r.Data[nameof(message)]?.AsValue()));
+        }
+        finally
+        {
+            await client.DisposeAsync();
+        }
     }
 }
